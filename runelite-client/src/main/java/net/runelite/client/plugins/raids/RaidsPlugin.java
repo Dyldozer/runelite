@@ -25,20 +25,24 @@
  */
 package net.runelite.client.plugins.raids;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.text.DecimalFormat;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
@@ -52,6 +56,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.InstanceTemplates;
 import net.runelite.api.ItemID;
 import net.runelite.api.MenuOpcode;
+import net.runelite.api.MessageNode;
 import net.runelite.api.NullObjectID;
 import static net.runelite.api.Perspective.SCENE_SIZE;
 import net.runelite.api.Player;
@@ -66,6 +71,7 @@ import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.events.WidgetHiddenChanged;
 import net.runelite.api.util.Text;
+import static net.runelite.api.util.Text.sanitize;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
@@ -76,6 +82,7 @@ import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ChatInput;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.OverlayMenuClicked;
 import net.runelite.client.game.ItemManager;
@@ -98,6 +105,8 @@ import net.runelite.client.util.ImageUtil;
 import net.runelite.client.ws.PartyMember;
 import net.runelite.client.ws.PartyService;
 import net.runelite.client.ws.WSClient;
+import net.runelite.http.api.chat.ChatClient;
+import net.runelite.http.api.chat.LayoutRoom;
 import net.runelite.http.api.ws.messages.party.PartyChatMessage;
 import org.apache.commons.lang3.StringUtils;
 import static org.apache.commons.lang3.StringUtils.containsIgnoreCase;
@@ -122,6 +131,9 @@ public class RaidsPlugin extends Plugin
 	private static final DecimalFormat DECIMAL_FORMAT = new DecimalFormat("###.##");
 	private static final Pattern ROTATION_REGEX = Pattern.compile("\\[(.*?)]");
 	private static final Pattern RAID_COMPLETE_REGEX = Pattern.compile("Congratulations - your raid is complete! Duration: ([0-9:]+)");
+	private static final String LAYOUT_COMMAND = "!layout";
+	private static final int MAX_LAYOUT_LEN = 300;
+
 	private static final ImmutableSet<String> GOOD_CRABS_FIRST = ImmutableSet.of(
 		"FSCCP.PCSCF - #WNWSWN#ESEENW", //both good crabs
 		"SCSPF.CCSPF - #ESWWNW#ESENES", //both good crabs
@@ -217,6 +229,12 @@ public class RaidsPlugin extends Plugin
 	@Getter(AccessLevel.NONE)
 	@Inject
 	private EventBus eventBus;
+
+	@Inject
+	private ScheduledExecutorService scheduledExecutorService;
+
+	@Inject
+	private ChatClient chatClient;
 
 	private boolean raidStarted;
 
@@ -1016,98 +1034,70 @@ public class RaidsPlugin extends Plugin
 
 	private RaidRoom determineRoom(Tile base)
 	{
-		RaidRoom room = new RaidRoom(base, RaidRoom.Type.EMPTY);
 		int chunkData = client.getInstanceTemplateChunks()[base.getPlane()][(base.getSceneLocation().getX()) / 8][base.getSceneLocation().getY() / 8];
 		InstanceTemplates template = InstanceTemplates.findMatch(chunkData);
 
 		if (template == null)
 		{
-			return room;
+			return RaidRoom.EMPTY;
 		}
 
 		switch (template)
 		{
 			case RAIDS_LOBBY:
 			case RAIDS_START:
-				room.setType(RaidRoom.Type.START);
-				break;
+				return RaidRoom.START;
 
 			case RAIDS_END:
-				room.setType(RaidRoom.Type.END);
-				break;
+				return RaidRoom.END;
 
 			case RAIDS_SCAVENGERS:
 			case RAIDS_SCAVENGERS2:
-				room.setType(RaidRoom.Type.SCAVENGERS);
-				break;
+				return RaidRoom.SCAVENGERS;
 
 			case RAIDS_SHAMANS:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.SHAMANS);
-				break;
+				return RaidRoom.SHAMANS;
 
 			case RAIDS_VASA:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.VASA);
-				break;
+				return RaidRoom.VASA;
 
 			case RAIDS_VANGUARDS:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.VANGUARDS);
-				break;
+				return RaidRoom.VANGUARDS;
 
 			case RAIDS_ICE_DEMON:
-				room.setType(RaidRoom.Type.PUZZLE);
-				room.setPuzzle(RaidRoom.Puzzle.ICE_DEMON);
-				break;
+				return RaidRoom.ICE_DEMON;
 
 			case RAIDS_THIEVING:
-				room.setType(RaidRoom.Type.PUZZLE);
-				room.setPuzzle(RaidRoom.Puzzle.THIEVING);
-				break;
+				return RaidRoom.THIEVING;
 
 			case RAIDS_FARMING:
 			case RAIDS_FARMING2:
-				room.setType(RaidRoom.Type.FARMING);
-				break;
+				return RaidRoom.FARMING;
 
 			case RAIDS_MUTTADILES:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.MUTTADILES);
-				break;
+				return RaidRoom.MUTTADILES;
 
 			case RAIDS_MYSTICS:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.MYSTICS);
-				break;
+				return RaidRoom.MYSTICS;
 
 			case RAIDS_TEKTON:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.TEKTON);
-				break;
+				return RaidRoom.TEKTON;
 
 			case RAIDS_TIGHTROPE:
-				room.setType(RaidRoom.Type.PUZZLE);
-				room.setPuzzle(RaidRoom.Puzzle.TIGHTROPE);
-				break;
+				return RaidRoom.TIGHTROPE;
 
 			case RAIDS_GUARDIANS:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.GUARDIANS);
-				break;
+				return RaidRoom.GUARDIANS;
 
 			case RAIDS_CRABS:
-				room.setType(RaidRoom.Type.PUZZLE);
-				room.setPuzzle(RaidRoom.Puzzle.CRABS);
-				break;
+				return RaidRoom.CRABS;
 
 			case RAIDS_VESPULA:
-				room.setType(RaidRoom.Type.COMBAT);
-				room.setBoss(RaidRoom.Boss.VESPULA);
-				break;
-		}
+				return RaidRoom.VESPULA;
 
-		return room;
+			default:
+				return RaidRoom.EMPTY;
+		}
 	}
 
 	private void reset()
@@ -1306,5 +1296,94 @@ public class RaidsPlugin extends Plugin
 		this.hideVanguards = config.hideVanguards();
 		this.hideUnknownCombat = config.hideUnknownCombat();
 		this.partyDisplay = config.partyDisplay();
+	}
+
+	private void lookupRaid(ChatMessage chatMessage, String s)
+	{
+		ChatMessageType type = chatMessage.getType();
+
+		final String player;
+		if (type.equals(ChatMessageType.PRIVATECHATOUT))
+		{
+			player = client.getLocalPlayer().getName();
+		}
+		else
+		{
+			player = sanitize(chatMessage.getName());
+		}
+
+		LayoutRoom[] layout;
+		try
+		{
+			layout = chatClient.getLayout(player);
+		}
+		catch (IOException ex)
+		{
+			log.debug("unable to lookup layout", ex);
+			return;
+		}
+
+		if (layout == null || layout.length == 0)
+		{
+			return;
+		}
+
+		String layoutMessage = Joiner.on(", ").join(Arrays.stream(layout)
+				.map(l -> RaidRoom.valueOf(l.name()))
+				.filter(room -> room.getType() == RoomType.COMBAT || room.getType() == RoomType.PUZZLE)
+				.map(RaidRoom::getName)
+				.toArray());
+
+		if (layoutMessage.length() > MAX_LAYOUT_LEN)
+		{
+			log.debug("layout message too long! {}", layoutMessage.length());
+			return;
+		}
+
+		String response = new ChatMessageBuilder()
+				.append(ChatColorType.HIGHLIGHT)
+				.append("Layout: ")
+				.append(ChatColorType.NORMAL)
+				.append(layoutMessage)
+				.build();
+
+		log.debug("Setting response {}", response);
+		final MessageNode messageNode = chatMessage.getMessageNode();
+		messageNode.setRuneLiteFormatMessage(response);
+		chatMessageManager.update(messageNode);
+		client.refreshChat();
+	}
+
+	private boolean submitRaid(ChatInput chatInput, String s)
+	{
+		if (raid == null)
+		{
+			return false;
+		}
+
+		final String playerName = client.getLocalPlayer().getName();
+		List<RaidRoom> orderedRooms = raid.getOrderedRooms();
+
+		LayoutRoom[] layoutRooms = orderedRooms.stream()
+				.map(room -> LayoutRoom.valueOf(room.name()))
+				.toArray(LayoutRoom[]::new);
+
+		scheduledExecutorService.execute(() ->
+		{
+			try
+			{
+				chatClient.submitLayout(playerName, layoutRooms);
+			}
+			catch (Exception ex)
+			{
+				log.warn("unable to submit layout", ex);
+			}
+			finally
+			{
+				chatInput.resume();
+			}
+		});
+
+		return true;
 	}
 }
