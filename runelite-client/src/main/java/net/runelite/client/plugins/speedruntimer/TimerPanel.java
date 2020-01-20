@@ -26,6 +26,8 @@ class TimerPanel extends PluginPanel
 		reset.addActionListener(e ->
 		{
 			plugin.resetWatch();
+			plugin.startStopWatch();
+			plugin.stopStopWatch();
 		});
 		this.add(reset);
 	}

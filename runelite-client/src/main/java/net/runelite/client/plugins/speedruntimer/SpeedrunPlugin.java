@@ -14,10 +14,12 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.game.NPCManager;
 import net.runelite.client.game.Sound;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.PluginType;
+import net.runelite.client.plugins.speedruntimer.boss.ZulrahHandler;
 import net.runelite.client.plugins.zulrah.phase.ZulrahPhase;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
@@ -62,6 +64,10 @@ public class SpeedrunPlugin extends Plugin
 	private boolean zulrahSpawned = false;
 	private boolean zulrahAttacked = false;
 	private boolean timerStarted = false;
+	public ZulrahHandler zulrahHandler;
+	public TobHandler tobHandler;
+	int cHp = 100;
+	private NPCManager npcManager;
 
 	@Override
 	protected void startUp()
@@ -91,7 +97,37 @@ public class SpeedrunPlugin extends Plugin
 	@Subscribe
 	void onGameTick(GameTick event)
 	{
+		for (NPC npc : client.getNpcs())
+		{
+			if (npc.getName() != null && npc.getName().equals("Zulrah"))
+			{
+				float ratio = npc.getHealthRatio();
+				int health = npc.getHealth();
+				speedrunOverlay.setOnZulrah(true);
+				if (health == -1) break;
+				float hpPerc = (ratio * 100.0f) / 120.0f;
+				System.out.println(hpPerc);
+				if (hpPerc <= 25 && hpPerc > 1 && cHp > 25)
+				{
+					speedrunOverlay.setTimes(2);
+					speedrunOverlay.setCurrent(3);
+					cHp = 25;
+				}
+				else if (hpPerc <= 50 && cHp > 50)
+				{
+					speedrunOverlay.setTimes(1);
+					speedrunOverlay.setCurrent(2);
+					cHp = 50;
+				}
+				else if (hpPerc <= 75 && cHp > 75)
+				{
+					speedrunOverlay.setTimes(0);
+					speedrunOverlay.setCurrent(1);
+					cHp = 75;
+				}
 
+			}
+		}
 	}
 
 	@Subscribe
@@ -119,6 +155,7 @@ public class SpeedrunPlugin extends Plugin
 		if (npcSpawned.getNpc().getId() == NpcID.ZULRAH)
 		{
 			zulrahSpawned = true;
+			zulrahHandler = new ZulrahHandler();
 		}
 	}
 
@@ -135,6 +172,8 @@ public class SpeedrunPlugin extends Plugin
 			speedrunOverlay.stopWatch.stop();
 			zulrahSpawned = false;
 			timerStarted = false;
+			speedrunOverlay.setTimes(3);
+			speedrunOverlay.setOnZulrah(false);
 		}
 	}
 
@@ -143,5 +182,8 @@ public class SpeedrunPlugin extends Plugin
 	}
 	public void startStopWatch() {
 		speedrunOverlay.startStopWatch();
+	}
+	public void stopStopWatch() {
+		speedrunOverlay.stopStopWatch();
 	}
 }
